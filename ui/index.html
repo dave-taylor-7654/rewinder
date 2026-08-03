@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>REWINDER</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #111; color: #ddd; font-family: "DejaVu Sans Mono", Menlo, monospace;
+         height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+  #topbar { display: flex; align-items: center; gap: 12px; padding: 8px 14px;
+            background: #1a1a1a; border-bottom: 1px solid #333; }
+  #topbar h1 { font-size: 15px; letter-spacing: 3px; color: #e33; }
+  #search { flex: 1; max-width: 480px; background: #222; border: 1px solid #444;
+            color: #ddd; padding: 6px 10px; font: inherit; outline: none; }
+  #search:focus { border-color: #e33; }
+  #appsel { background: #222; border: 1px solid #444; color: #ddd; padding: 6px 8px;
+            font: inherit; max-width: 200px; }
+  #daynav { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+  #daynav button, #rangesel { background: #222; border: 1px solid #444; color: #ddd;
+            padding: 5px 10px; font: inherit; cursor: pointer; }
+  #customrange { display: none; gap: 4px; }
+  #customrange.open { display: inline-flex; }
+  #customrange input { background: #222; border: 1px solid #444; color: #ddd;
+            padding: 4px 6px; font: inherit; font-size: 11px; color-scheme: dark; }
+  #daynav button:hover { border-color: #888; }
+  #stage { flex: 1; display: flex; align-items: center; justify-content: center;
+           position: relative; min-height: 0; background: #000; }
+  #shot { max-width: 100%; max-height: 100%; object-fit: contain; }
+  #empty { color: #555; font-size: 14px; text-align: center; line-height: 2; }
+  #results { position: absolute; top: 0; right: 0; bottom: 0; width: 380px;
+             background: rgba(20,20,20,.96); border-left: 1px solid #333;
+             overflow-y: auto; display: none; }
+  #results.open { display: block; }
+  .hit { padding: 10px 14px; border-bottom: 1px solid #2a2a2a; cursor: pointer; font-size: 12px; }
+  .hit:hover { background: #262626; }
+  .hit .when { color: #e33; margin-bottom: 4px; }
+  .hit .snip { color: #999; white-space: pre-wrap; word-break: break-word; }
+  .hit .snip b { color: #fff; font-weight: bold; }
+  #timeline { padding: 10px 14px 14px; background: #1a1a1a; border-top: 1px solid #333; }
+  #scrub { width: 100%; -webkit-appearance: none; height: 22px; background: transparent; }
+  #scrub::-webkit-slider-runnable-track { height: 6px; background: #333; border-radius: 3px; }
+  #scrub::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 22px;
+      margin-top: -8px; background: #e33; border-radius: 3px; cursor: ew-resize; }
+  #meta { display: flex; justify-content: space-between; font-size: 12px;
+          color: #888; margin-top: 6px; }
+  #when { color: #fff; font-size: 13px; }
+  #settings { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.7);
+              z-index: 10; align-items: center; justify-content: center; }
+  #settings.open { display: flex; }
+  #settings-box { background: #1a1a1a; border: 1px solid #444; padding: 20px 24px;
+                  width: 560px; max-width: 92vw; }
+  #settings-box h2 { font-size: 13px; letter-spacing: 3px; color: #e33;
+                     margin: 20px 0 12px; }
+  #settings-box h2:first-child { margin-top: 0; }
+  #settings-box .hrow { display: flex; justify-content: space-between; align-items: center;
+                        margin: 20px 0 12px; }
+  #settings-box .hrow h2 { margin: 0; }
+  #settings-box .hrow input[type=checkbox] { accent-color: #e33; width: 16px; height: 16px;
+                        cursor: pointer; }
+  #settings-box .row { margin-bottom: 12px; }
+  #settings-box label { display: block; font-size: 11px; color: #888; margin-bottom: 4px; }
+  #datadir { width: 100%; background: #222; border: 1px solid #444; color: #ddd;
+             padding: 6px 10px; font: inherit; outline: none; }
+  #volumes { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+  .vol { background: #222; border: 1px solid #444; color: #aaa; padding: 4px 10px;
+         font: inherit; font-size: 11px; cursor: pointer; }
+  .vol:hover { border-color: #e33; color: #fff; }
+  #storstats { font-size: 11px; color: #888; line-height: 1.8; margin-bottom: 10px;
+               white-space: pre-line; }
+  #setmsg { font-size: 11px; color: #e33; min-height: 16px; margin: 12px 0 8px; }
+  #settings-box .btns { display: flex; gap: 8px; justify-content: flex-end; }
+  #settings-box .btns button { background: #222; border: 1px solid #444; color: #ddd;
+        padding: 6px 16px; font: inherit; cursor: pointer; }
+  #settings-box .btns button:hover { border-color: #e33; }
+  #scrubrow { display: flex; align-items: center; gap: 10px; }
+  #scrubrow #scrub { flex: 1; }
+  #trash { background: none; border: 1px solid #444; color: #888; font: inherit;
+           font-size: 14px; padding: 2px 8px; cursor: pointer; }
+  #trash:hover { border-color: #e33; color: #e33; }
+  #deletep { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.7);
+             z-index: 10; align-items: center; justify-content: center; }
+  #deletep.open { display: flex; }
+  #delete-box { background: #1a1a1a; border: 1px solid #444; padding: 20px 24px;
+                width: 380px; max-width: 92vw; }
+  #delete-box h2 { font-size: 13px; letter-spacing: 3px; color: #e33; margin-bottom: 14px; }
+  .dbtn { display: block; width: 100%; background: #222; border: 1px solid #444;
+          color: #ddd; padding: 8px 12px; font: inherit; font-size: 12px;
+          cursor: pointer; margin-bottom: 8px; text-align: left; }
+  .dbtn:hover { border-color: #e33; }
+  .dbtn.armed { border-color: #e33; color: #e33; }
+  .dbtn.danger { color: #e33; }
+  #delmsg { font-size: 11px; color: #888; min-height: 16px; margin: 6px 0 10px; }
+  #delete-box .btns { display: flex; justify-content: flex-end; }
+  #delete-box .btns button { background: #222; border: 1px solid #444; color: #ddd;
+        padding: 6px 16px; font: inherit; cursor: pointer; }
+  #delete-box .btns button:hover { border-color: #888; }
+</style>
+</head>
+<body>
+  <div id="topbar">
+    <h1>REWINDER</h1>
+    <input id="search" placeholder="SEARCH EVERYTHING YOU'VE SEEN…" autocomplete="off">
+    <select id="appsel" title="Filter by application"><option value="">ALL APPS</option></select>
+    <div id="daynav">
+      <button id="prevday" title="Previous day">&#9664;</button>
+      <select id="rangesel" title="Browsable range">
+        <option value="today">TODAY</option>
+        <option value="h48">LAST 48 HOURS</option>
+        <option value="d30">PAST 30 DAYS</option>
+        <option value="d400">PAST 400 DAYS</option>
+        <option value="all">ALL TIME</option>
+        <option value="custom">CUSTOM&#8230;</option>
+      </select>
+      <span id="customrange">
+        <input type="date" id="datefrom" title="From">
+        <input type="date" id="dateto" title="To">
+      </span>
+      <button id="nextday" title="Next day">&#9654;</button>
+      <button id="gear" title="Settings">&#9881;</button>
+    </div>
+  </div>
+  <div id="settings">
+    <div id="settings-box">
+      <h2>STORAGE</h2>
+      <div class="row"><label>DATA DIRECTORY</label>
+        <input id="datadir" spellcheck="false"></div>
+      <div id="volumes"></div>
+      <div id="storstats"></div>
+      <h2>IGNORED APPS</h2>
+      <div class="row"><label>WINDOWS ERASED FROM EVERY FRAME (comma-separated)</label>
+        <input id="exclapps" spellcheck="false" placeholder="e.g. 1Password, Messages"></div>
+      <h2>CAPTURE INTERVAL</h2>
+      <div class="row"><label>SECONDS BETWEEN FRAMES (10–600)</label>
+        <input id="interval" type="number" min="10" max="600" step="5"></div>
+      <div class="hrow"><h2>LAUNCH AT STARTUP</h2>
+        <input type="checkbox" id="launchlogin"></div>
+      <div id="setmsg"></div>
+      <div class="row btns">
+        <button id="applyset">APPLY</button>
+        <button id="closeset">CLOSE</button>
+      </div>
+    </div>
+  </div>
+  <div id="stage">
+    <img id="shot" style="display:none">
+    <div id="empty">NO CAPTURES IN THIS RANGE<br>widen the range, or wait for the timeline to fill</div>
+    <div id="results"></div>
+  </div>
+  <div id="deletep">
+    <div id="delete-box">
+      <h2>DELETE</h2>
+      <button class="dbtn" id="delframe">DELETE CURRENT FRAME</button>
+      <button class="dbtn confirm" data-mode="hour">PURGE LAST HOUR</button>
+      <button class="dbtn confirm" data-mode="today">PURGE TODAY</button>
+      <button class="dbtn confirm" data-mode="today_yesterday">PURGE TODAY + YESTERDAY</button>
+      <button class="dbtn confirm danger" data-mode="all">PURGE ALL HISTORY</button>
+      <div id="delmsg"></div>
+      <div class="btns"><button id="closedel">CLOSE</button></div>
+    </div>
+  </div>
+  <div id="timeline">
+    <div id="scrubrow">
+      <input id="scrub" type="range" min="0" max="0" value="0">
+      <button id="trash" title="Delete frames…">&#128465;&#xFE0E;</button>
+    </div>
+    <div id="meta">
+      <span id="when">—</span>
+      <span id="count"></span>
+    </div>
+  </div>
+<script>
+let shots = [], idx = -1;
+const $ = id => document.getElementById(id);
+
+async function j(url) { const r = await fetch(url); return r.json(); }
+
+function fmtT(t) { return t.slice(0,2) + ":" + t.slice(2,4) + ":" + t.slice(4,6); }
+
+// browsable-range presets → epoch seconds for /api/shots?since=
+const RANGES = {
+  today: () => { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime() / 1000; },
+  h48:   () => Date.now() / 1000 - 48 * 3600,
+  d30:   () => Date.now() / 1000 - 30 * 86400,
+  d400:  () => Date.now() / 1000 - 400 * 86400,
+  all:   () => 0,
+};
+
+function fetchShots() {
+  if ($("rangesel").value === "custom") {
+    let from = $("datefrom").value, to = $("dateto").value;
+    if (!from && !to) return Promise.resolve([]);
+    if (!from) from = to;
+    if (!to) to = from;
+    if (from > to) [from, to] = [to, from];
+    const since = new Date(from + "T00:00:00").getTime() / 1000;
+    const until = new Date(to + "T23:59:59").getTime() / 1000;
+    return j(`/api/shots?since=${Math.floor(since)}&until=${Math.floor(until)}`);
+  }
+  const since = RANGES[$("rangesel").value]();
+  return j(`/api/shots?since=${Math.floor(since)}`);
+}
+
+function show() {
+  if (idx < 0 || !shots.length) {
+    $("shot").style.display = "none"; $("empty").style.display = "block";
+    $("when").textContent = "—"; $("count").textContent = "";
+    return;
+  }
+  const s = shots[idx];
+  $("shot").src = `/img/${s.day}/${s.f}`;
+  $("shot").style.display = "block"; $("empty").style.display = "none";
+  $("when").textContent = `${s.day}  ${fmtT(s.t)}` + (s.app ? `  ·  ${s.app}` : "");
+  $("count").textContent = `${idx + 1} / ${shots.length}`;
+  $("scrub").value = idx;
+  // preload neighbors for smooth scrubbing
+  for (const n of [idx - 1, idx + 1])
+    if (n >= 0 && n < shots.length) (new Image()).src = `/img/${shots[n].day}/${shots[n].f}`;
+}
+
+async function loadRange(keepFrame) {
+  const key = keepFrame && idx >= 0 && shots[idx] ? shots[idx].day + shots[idx].t : null;
+  shots = await fetchShots();
+  $("scrub").max = Math.max(0, shots.length - 1);
+  idx = key ? shots.findIndex(s => s.day + s.t === key) : -1;
+  if (idx < 0) idx = shots.length - 1;
+  show();
+}
+
+// jump to a specific frame; widen to ALL TIME if it's outside the current range
+async function jumpToFrame(day, t) {
+  let i = shots.findIndex(s => s.day === day && s.t === t);
+  if (i < 0) {
+    $("rangesel").value = "all";
+    $("customrange").classList.remove("open");
+    shots = await fetchShots();
+    $("scrub").max = Math.max(0, shots.length - 1);
+    i = shots.findIndex(s => s.day === day && s.t === t);
+  }
+  if (i >= 0) { idx = i; show(); }
+}
+
+function step(n) {
+  if (!shots.length) return;
+  idx = Math.min(shots.length - 1, Math.max(0, idx + n));
+  show();
+}
+
+// ◀ ▶ jump to the start of the previous / next day within the loaded range
+function dayJump(dir) {
+  if (idx < 0) return;
+  const cur = shots[idx].day;
+  if (dir < 0) {
+    for (let i = idx - 1; i >= 0; i--) {
+      if (shots[i].day !== cur) {
+        let jday = shots[i].day, k = i;
+        while (k > 0 && shots[k - 1].day === jday) k--;
+        idx = k; show(); return;
+      }
+    }
+    idx = 0; show();
+  } else {
+    for (let i = idx + 1; i < shots.length; i++) {
+      if (shots[i].day !== cur) { idx = i; show(); return; }
+    }
+    idx = shots.length - 1; show();
+  }
+}
+
+$("scrub").addEventListener("input", e => { idx = +e.target.value; show(); });
+$("rangesel").addEventListener("change", () => {
+  const custom = $("rangesel").value === "custom";
+  $("customrange").classList.toggle("open", custom);
+  if (custom) {
+    // prefill with the day being viewed so "this specific date" is one click away
+    const d = (idx >= 0 && shots[idx]) ? shots[idx].day
+            : new Date().toISOString().slice(0, 10);
+    if (!$("datefrom").value) $("datefrom").value = d;
+    if (!$("dateto").value) $("dateto").value = d;
+  }
+  loadRange(false);
+});
+$("datefrom").addEventListener("change", () => loadRange(false));
+$("dateto").addEventListener("change", () => loadRange(false));
+$("prevday").addEventListener("click", () => dayJump(-1));
+$("nextday").addEventListener("click", () => dayJump(1));
+
+document.addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT" && e.target.type !== "range" || e.target.tagName === "SELECT") {
+    if (e.key === "Escape") {
+      e.target.blur();
+      $("results").classList.remove("open");
+      $("settings").classList.remove("open");
+    }
+    return;
+  }
+  if (e.key === "ArrowLeft") { step(e.shiftKey ? -10 : -1); e.preventDefault(); }
+  else if (e.key === "ArrowRight") { step(e.shiftKey ? 10 : 1); e.preventDefault(); }
+  else if (e.key === "Home") { idx = 0; show(); }
+  else if (e.key === "End") { idx = shots.length - 1; show(); }
+  else if (e.key === "/") { $("search").focus(); e.preventDefault(); }
+  else if (e.key === "Escape") {
+    $("results").classList.remove("open");
+    $("settings").classList.remove("open");
+    $("deletep").classList.remove("open");
+  }
+});
+
+let searchTimer = null;
+$("search").addEventListener("input", () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(doSearch, 250);
+});
+$("appsel").addEventListener("change", doSearch);
+
+async function loadApps() {
+  const apps = await j("/api/apps");
+  const sel = $("appsel"), cur = sel.value;
+  sel.innerHTML = '<option value="">ALL APPS</option>';
+  for (const a of apps) {
+    const o = document.createElement("option");
+    o.value = a.app;
+    o.textContent = `${a.app} (${a.n})`;
+    sel.appendChild(o);
+  }
+  sel.value = cur;
+  if (sel.selectedIndex < 0) sel.value = "";
+}
+
+async function doSearch() {
+  const q = $("search").value.trim();
+  const app = $("appsel").value;
+  const box = $("results");
+  if (!q && !app) { box.classList.remove("open"); return; }
+  const hits = await j(`/api/search?q=${encodeURIComponent(q)}&app=${encodeURIComponent(app)}`);
+  box.innerHTML = "";
+  if (!hits.length) {
+    box.innerHTML = '<div class="hit"><div class="snip">NO MATCHES</div></div>';
+  }
+  for (const h of hits) {
+    const div = document.createElement("div");
+    div.className = "hit";
+    const snip = (h.snippet || "")
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+      .replace(/\[/g, "<b>").replace(/\]/g, "</b>");
+    const appTag = h.app ? `  ·  ${h.app}` : "";
+    div.innerHTML = `<div class="when">${h.day} ${fmtT(h.t)}${appTag}</div><div class="snip">${snip}</div>`;
+    div.addEventListener("click", () => jumpToFrame(h.day, h.t));
+    box.appendChild(div);
+  }
+  box.classList.add("open");
+}
+
+// ---- settings ----
+function fmtBytes(b) {
+  if (b == null) return "?";
+  const u = ["B","KB","MB","GB","TB"]; let i = 0;
+  while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
+  return b.toFixed(i > 1 ? 1 : 0) + " " + u[i];
+}
+
+async function openSettings() {
+  $("setmsg").textContent = "";
+  $("settings").classList.add("open");
+  const [cfg, vols] = await Promise.all([j("/api/config"), j("/api/volumes")]);
+  $("datadir").value = cfg.data_dir;
+  $("exclapps").value = (cfg.exclude_apps || []).join(", ");
+  $("interval").value = cfg.capture_interval || 60;
+  $("launchlogin").checked = cfg.launch_at_login !== false;
+  $("storstats").textContent =
+    `SHOTS: ${cfg.shots_total}   TODAY: ${fmtBytes(cfg.today_bytes)}   ` +
+    `TOTAL: ${fmtBytes(cfg.usage_bytes)}\nFREE ON TARGET: ${fmtBytes(cfg.free_bytes)}` +
+    (cfg.writable ? "" : "\n⚠ CURRENT TARGET NOT WRITABLE — SPOOLING LOCALLY") +
+    (cfg.spooled ? "\n⚠ SPOOLED FRAMES WAITING TO MIGRATE" : "") +
+    (cfg.legacy_dirs.length ? `\nMIGRATING FROM: ${cfg.legacy_dirs.join(", ")}` : "");
+  const vbox = $("volumes");
+  vbox.innerHTML = "";
+  for (const v of vols) {
+    const b = document.createElement("button");
+    b.className = "vol";
+    b.textContent = `${v.label} (${fmtBytes(v.free_bytes)} free)`;
+    b.title = v.path;
+    b.addEventListener("click", () => { $("datadir").value = v.path; });
+    vbox.appendChild(b);
+  }
+}
+
+$("gear").addEventListener("click", openSettings);
+$("closeset").addEventListener("click", () => $("settings").classList.remove("open"));
+$("settings").addEventListener("click", e => {
+  if (e.target === $("settings")) $("settings").classList.remove("open");
+});
+$("applyset").addEventListener("click", async () => {
+  $("setmsg").textContent = "APPLYING…";
+  const r = await fetch("/api/config", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({
+      data_dir: $("datadir").value.trim(),
+      exclude_apps: $("exclapps").value.split(",").map(s => s.trim()).filter(Boolean),
+      capture_interval: parseInt($("interval").value, 10) || 60,
+      launch_at_login: $("launchlogin").checked,
+    }),
+  });
+  const res = await r.json();
+  if (res.error) { $("setmsg").textContent = "ERROR: " + res.error; return; }
+  $("setmsg").textContent = res.migrating
+    ? "OK — new captures go to the new location; existing data migrating in background"
+    : "OK";
+  setTimeout(openSettings, 1500);
+});
+
+// ---- delete / purge ----
+async function postDelete(payload) {
+  const r = await fetch("/api/delete", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(payload),
+  });
+  return r.json();
+}
+
+$("trash").addEventListener("click", () => {
+  $("delmsg").textContent = "";
+  document.querySelectorAll(".dbtn.confirm").forEach(b => {
+    b.classList.remove("armed");
+    b.textContent = b.dataset.label || b.textContent;
+  });
+  $("deletep").classList.add("open");
+});
+$("closedel").addEventListener("click", () => $("deletep").classList.remove("open"));
+$("deletep").addEventListener("click", e => {
+  if (e.target === $("deletep")) $("deletep").classList.remove("open");
+});
+
+$("delframe").addEventListener("click", async () => {
+  if (idx < 0 || !shots.length) { $("delmsg").textContent = "NO FRAME SELECTED"; return; }
+  const oldIdx = idx;
+  const res = await postDelete({mode: "frame", day: shots[idx].day, t: shots[idx].t});
+  if (res.error) { $("delmsg").textContent = "ERROR: " + res.error; return; }
+  shots = await fetchShots();
+  $("scrub").max = Math.max(0, shots.length - 1);
+  idx = Math.min(oldIdx, shots.length - 1);
+  show();
+  $("delmsg").textContent = "FRAME DELETED";
+});
+
+// purge buttons arm on first click, execute on second within 3s
+document.querySelectorAll(".dbtn.confirm").forEach(b => {
+  b.dataset.label = b.textContent;
+  let timer = null;
+  b.addEventListener("click", async () => {
+    if (!b.classList.contains("armed")) {
+      b.classList.add("armed");
+      b.textContent = "CLICK AGAIN TO CONFIRM";
+      timer = setTimeout(() => {
+        b.classList.remove("armed");
+        b.textContent = b.dataset.label;
+      }, 3000);
+      return;
+    }
+    clearTimeout(timer);
+    b.classList.remove("armed");
+    b.textContent = b.dataset.label;
+    $("delmsg").textContent = "PURGING…";
+    const res = await postDelete({mode: b.dataset.mode});
+    if (res.error) { $("delmsg").textContent = "ERROR: " + res.error; return; }
+    $("delmsg").textContent = `PURGED ${res.deleted} FRAMES`;
+    await loadRange(false);
+    loadApps();
+  });
+});
+
+// follow the live tail: refresh the range each minute; stay on the current frame
+// unless parked at the end (rolling ranges shift indexes, so re-find by identity)
+setInterval(async () => {
+  loadApps();
+  const atEnd = idx === shots.length - 1;
+  await loadRange(!atEnd);
+}, 60000);
+
+loadRange(false);
+loadApps();
+if (new URLSearchParams(location.search).has("settings")) openSettings();
+</script>
+</body>
+</html>

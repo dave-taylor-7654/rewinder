@@ -1,0 +1,11 @@
+build/
+config.json
+data/
+spool/
+index.db
+.last-frame
+*.log
+.DS_Store
+sign.env
+make-dmg.sh
+assets/dmg-background.png
