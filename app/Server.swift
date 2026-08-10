@@ -106,6 +106,33 @@ func ensureNoindex() {
     slog("data dir renamed to \(nd) (Spotlight exclusion)")
 }
 
+// One-time (per plaintext file) sweep sealing pre-encryption history.
+// Cheap on later launches: an 8-byte prefix read per file, no rewrites.
+func migrateEncrypt() {
+    guard loadRawConfig()["encrypt"] as? Bool ?? true, frameKey() != nil else { return }
+    let fm = FileManager.default
+    var n = 0
+    for root in searchRoots() {
+        guard let days = try? fm.contentsOfDirectory(atPath: root) else { continue }
+        for day in days.sorted() where isDayName(day) {
+            let ddir = root + "/" + day
+            for name in (try? fm.contentsOfDirectory(atPath: ddir)) ?? [] {
+                let ext = (name as NSString).pathExtension.lowercased()
+                guard ["webp", "jpg", "jpeg", "txt", "json"].contains(ext) else { continue }
+                let p = ddir + "/" + name
+                if let fh = FileHandle(forReadingAtPath: p) {
+                    let head = try? fh.read(upToCount: ENC_MAGIC.count)
+                    try? fh.close()
+                    if head == ENC_MAGIC { continue }
+                }
+                encryptFileInPlace(p)
+                n += 1
+            }
+        }
+    }
+    if n > 0 { slog("sealed \(n) pre-encryption files") }
+}
+
 func searchRoots() -> [String] {
     let cfg = loadRawConfig()
     var roots = [cfg["data_dir"] as? String ?? ""]
@@ -255,12 +282,13 @@ func scanOnce(_ db: DB) -> Int {
                 guard let stem = shotStem(name) else { continue }
                 let rel = day + "/" + name
                 if known.contains(rel) { continue }
-                guard let text = try? String(contentsOfFile: ddir + "/" + stem + ".txt", encoding: .utf8) else {
-                    continue  // sidecar not written yet; next scan
+                guard let traw = fm.contents(atPath: ddir + "/" + stem + ".txt"),
+                      let text = String(data: decryptFrameData(traw), encoding: .utf8) else {
+                    continue  // sidecar not written yet (or sealed and key unavailable); next scan
                 }
                 var app: Any = NSNull()
-                if let jd = try? Data(contentsOf: URL(fileURLWithPath: ddir + "/" + stem + ".json")),
-                   let j = try? JSONSerialization.jsonObject(with: jd) as? [String: Any],
+                if let jd = fm.contents(atPath: ddir + "/" + stem + ".json"),
+                   let j = try? JSONSerialization.jsonObject(with: decryptFrameData(jd)) as? [String: Any],
                    let a = j["app"] as? String, !a.isEmpty {
                     app = a
                 }
@@ -379,6 +407,9 @@ final class RewinderServer {
 
     func start() {
         ensureNoindex()
+        // the OCR index holds plaintext text; keep it owner-only on disk
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: DB_PATH)
+        Thread { migrateEncrypt() }.start()
         Thread { self.listenLoop() }.start()
         Thread { self.scanLoop() }.start()
     }
@@ -490,6 +521,10 @@ final class RewinderServer {
 
     private func routeGET(_ req: HTTPRequest) -> Data {
         guard let db = DB() else { return errorResponse("db unavailable", status: 500) }
+        let gated = ["/api/days", "/api/shots", "/api/apps", "/api/search"]
+        if gated.contains(req.path), viewingBlocked() {
+            return jsonResponse(["locked": true], status: 423)
+        }
         switch req.path {
         case "/":
             let ui = (Bundle.main.resourcePath ?? "") + "/ui/index.html"
@@ -571,6 +606,10 @@ final class RewinderServer {
             out["free_bytes"] = freeBytes(freePath) ?? NSNull() as Any
             out["shots_total"] = nshots
             out["spooled"] = spoolBytes > 0
+            out["encrypt"] = cfg["encrypt"] as? Bool ?? true
+            out["encryption_active"] = frameKey() != nil
+            out["require_unlock"] = cfg["require_unlock"] as? Bool ?? false
+            out["locked"] = viewingBlocked()
             return jsonResponse(out)
 
         case "/api/volumes":
@@ -589,6 +628,7 @@ final class RewinderServer {
 
         default:
             if req.path.hasPrefix("/img/") {
+                if viewingBlocked() { return errorResponse("locked", status: 423) }
                 let rel = String(req.path.dropFirst(5))
                 let parts = rel.split(separator: "/")
                 guard parts.count == 2, isDayName(String(parts[0])),
@@ -598,7 +638,7 @@ final class RewinderServer {
                 for root in searchRoots() {
                     let full = root + "/" + rel
                     if let data = FileManager.default.contents(atPath: full) {
-                        return httpResponse(200, ctype, data)
+                        return httpResponse(200, ctype, decryptFrameData(data))
                     }
                 }
                 return errorResponse("not found", status: 404)
@@ -612,6 +652,14 @@ final class RewinderServer {
             return errorResponse("bad json")
         }
         switch req.path {
+        case "/api/unlock":
+            let ok = viewingBlocked() ? requestUnlock() : true
+            return jsonResponse(["ok": ok, "locked": viewingBlocked()])
+
+        case "/api/lock":
+            lockViewing()
+            return jsonResponse(["ok": true, "locked": viewingBlocked()])
+
         case "/api/delete":
             let mode = body["mode"] as? String ?? ""
             let day = body["day"] as? String ?? ""
@@ -632,6 +680,10 @@ final class RewinderServer {
                 cfg["exclude_apps"] = list.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
             }
             if let v = body["launch_at_login"] { cfg["launch_at_login"] = (v as? Bool) ?? true }
+            if let v = body["require_unlock"] as? Bool {
+                cfg["require_unlock"] = v
+                if v { lockViewing() }  // gate takes effect immediately
+            }
             if let v = body["capture_interval"] {
                 guard let n = v as? Int else { return errorResponse("capture_interval must be a number") }
                 cfg["capture_interval"] = min(600, max(10, n))

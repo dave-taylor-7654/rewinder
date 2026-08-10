@@ -57,6 +57,7 @@ struct Config {
     var dedup = true
     var dedupThreshold = 0.008
     var dedupForceMinutes = 10.0
+    var encrypt = true
     var excludeApps: [String] = []
     var captureInterval = 60.0   // seconds between capture ticks (10–600)
     var launchAtLogin = true
@@ -73,6 +74,7 @@ struct Config {
         if let v = json["dedup"] as? Bool { c.dedup = v }
         if let v = json["dedup_threshold"] as? Double { c.dedupThreshold = v }
         if let v = json["dedup_force_minutes"] as? Double { c.dedupForceMinutes = v }
+        if let v = json["encrypt"] as? Bool { c.encrypt = v }
         if let v = json["exclude_apps"] as? [String] { c.excludeApps = v }
         if let v = json["capture_interval"] as? Double { c.captureInterval = min(600, max(10, v)) }
         if let v = json["launch_at_login"] as? Bool { c.launchAtLogin = v }
@@ -221,10 +223,14 @@ func store(_ image: CGImage, text: String, meta: [String: String],
                        uti: "public.jpeg" as CFString, quality: 0.55)
         name = stem + ".jpg"
     }
-    if let mdata = try? JSONSerialization.data(withJSONObject: meta) {
+    if cfg.encrypt { encryptFileInPlace(dayDir.appendingPathComponent(name!).path) }
+    if var mdata = try? JSONSerialization.data(withJSONObject: meta) {
+        if cfg.encrypt { mdata = encryptFrameData(mdata) }
         try? mdata.write(to: dayDir.appendingPathComponent(stem + ".json"))
     }
-    try text.write(to: dayDir.appendingPathComponent(stem + ".txt"), atomically: true, encoding: .utf8)
+    var tdata = Data(text.utf8)
+    if cfg.encrypt { tdata = encryptFrameData(tdata) }
+    try tdata.write(to: dayDir.appendingPathComponent(stem + ".txt"), options: .atomic)
     return name!
 }
 
@@ -455,6 +461,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         stor.isEnabled = false
         menu.addItem(stor)
         menu.addItem(item("Open Data Folder", #selector(openData)))
+        menu.addItem(item("Export Encryption Key…", #selector(exportKey)))
+        menu.addItem(item("Import Encryption Key…", #selector(importKey)))
         if !CGPreflightScreenCaptureAccess() {
             menu.addItem(.separator())
             menu.addItem(item("Fix Screen Recording Permission…", #selector(fixPermission)))
@@ -468,6 +476,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func openSettings() { TimelineWindow.shared.show(settings: true) }
     @objc func openData() {
         NSWorkspace.shared.open(URL(fileURLWithPath: Config.load().dataDir))
+    }
+    @objc func exportKey() {
+        guard let b64 = exportableFrameKey() else { return }
+        let panel = NSSavePanel()
+        panel.title = "Export Rewinder Encryption Key"
+        panel.nameFieldStringValue = "rewinder-key.txt"
+        panel.message = "Anyone with this file can read your frames. Store it somewhere safe — without it, an encrypted history is unrecoverable."
+        NSApp.activate(ignoringOtherApps: true)
+        if panel.runModal() == .OK, let url = panel.url {
+            try? (b64 + "\n").write(to: url, atomically: true, encoding: .utf8)
+        }
+    }
+    @objc func importKey() {
+        let alert = NSAlert()
+        alert.messageText = "Replace encryption key?"
+        alert.informativeText = "Frames sealed under the current key will become unreadable. Import only to restore the key this Mac's history was recorded with."
+        alert.addButton(withTitle: "Import…")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let panel = NSOpenPanel()
+        panel.title = "Import Rewinder Encryption Key"
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK, let url = panel.url,
+              let b64 = try? String(contentsOf: url, encoding: .utf8),
+              let raw = Data(base64Encoded: b64.trimmingCharacters(in: .whitespacesAndNewlines)),
+              replaceFrameKey(raw) else {
+            let fail = NSAlert()
+            fail.messageText = "Key not imported"
+            fail.informativeText = "The file must contain a key exported from Rewinder."
+            fail.runModal()
+            return
+        }
     }
     @objc func captureNow() { tick(force: true) }
     @objc func pauseHour() {

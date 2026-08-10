@@ -46,6 +46,13 @@
   #when { color: #fff; font-size: 13px; }
   #settings { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.7);
               z-index: 10; align-items: center; justify-content: center; }
+  #lockp { display: none; position: fixed; inset: 0; background: #111; z-index: 40;
+           align-items: center; justify-content: center; flex-direction: column; gap: 18px; }
+  #lockp h2 { font-size: 15px; letter-spacing: 5px; color: #e33; }
+  #lockp button { background: #222; border: 1px solid #444; color: #ddd; font: inherit;
+                  letter-spacing: 2px; padding: 8px 26px; cursor: pointer; }
+  #lockp button:hover { border-color: #e33; }
+  #lockp .note { font-size: 10px; color: #666; letter-spacing: 1px; }
   #settings.open { display: flex; }
   #settings-box { background: #1a1a1a; border: 1px solid #444; padding: 20px 24px;
                   width: 560px; max-width: 92vw; }
@@ -119,6 +126,11 @@
       <button id="gear" title="Settings">&#9881;</button>
     </div>
   </div>
+  <div id="lockp">
+    <h2>LOCKED</h2>
+    <button id="unlockbtn">UNLOCK</button>
+    <div class="note">AUTHENTICATE WITH TOUCH ID OR YOUR ACCOUNT PASSWORD</div>
+  </div>
   <div id="settings">
     <div id="settings-box">
       <h2>STORAGE</h2>
@@ -134,6 +146,9 @@
         <input id="interval" type="number" min="10" max="600" step="5"></div>
       <div class="hrow"><h2>LAUNCH AT STARTUP</h2>
         <input type="checkbox" id="launchlogin"></div>
+      <div class="hrow"><h2>REQUIRE UNLOCK TO VIEW</h2>
+        <input type="checkbox" id="requnlock"></div>
+      <div class="row"><label id="encstatus"></label></div>
       <div id="setmsg"></div>
       <div class="row btns">
         <button id="applyset">APPLY</button>
@@ -172,7 +187,13 @@
 let shots = [], idx = -1;
 const $ = id => document.getElementById(id);
 
-async function j(url) { const r = await fetch(url); return r.json(); }
+async function j(url) {
+  const r = await fetch(url);
+  if (r.status === 423) { showLock(); return new Promise(() => {}); }  // parked until unlock reloads
+  return r.json();
+}
+
+function showLock() { $("lockp").style.display = "flex"; }
 
 function fmtT(t) { return t.slice(0,2) + ":" + t.slice(2,4) + ":" + t.slice(4,6); }
 
@@ -366,6 +387,10 @@ async function openSettings() {
   $("exclapps").value = (cfg.exclude_apps || []).join(", ");
   $("interval").value = cfg.capture_interval || 60;
   $("launchlogin").checked = cfg.launch_at_login !== false;
+  $("requnlock").checked = cfg.require_unlock === true;
+  $("encstatus").textContent = cfg.encryption_active
+    ? "FRAMES ENCRYPTED AT REST (AES-256 · KEY IN LOGIN KEYCHAIN — EXPORT A BACKUP FROM THE MENU BAR)"
+    : "⚠ ENCRYPTION KEY UNAVAILABLE — FRAMES STORED UNENCRYPTED";
   $("storstats").textContent =
     `SHOTS: ${cfg.shots_total}   TODAY: ${fmtBytes(cfg.today_bytes)}   ` +
     `TOTAL: ${fmtBytes(cfg.usage_bytes)}\nFREE ON TARGET: ${fmtBytes(cfg.free_bytes)}` +
@@ -384,6 +409,17 @@ async function openSettings() {
   }
 }
 
+$("unlockbtn").addEventListener("click", async () => {
+  $("unlockbtn").disabled = true;
+  try {
+    const r = await fetch("/api/unlock", {method: "POST",
+      headers: {"Content-Type": "application/json"}, body: "{}"});
+    const d = await r.json();
+    if (d.ok && !d.locked) { location.reload(); return; }
+  } catch {}
+  $("unlockbtn").disabled = false;
+});
+
 $("gear").addEventListener("click", openSettings);
 $("closeset").addEventListener("click", () => $("settings").classList.remove("open"));
 $("settings").addEventListener("click", e => {
@@ -399,6 +435,7 @@ $("applyset").addEventListener("click", async () => {
       exclude_apps: $("exclapps").value.split(",").map(s => s.trim()).filter(Boolean),
       capture_interval: parseInt($("interval").value, 10) || 60,
       launch_at_login: $("launchlogin").checked,
+      require_unlock: $("requnlock").checked,
     }),
   });
   const res = await r.json();
