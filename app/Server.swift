@@ -13,7 +13,7 @@ import SQLite3
 let SERVER_PORT: UInt16 = 8787
 let SCAN_INTERVAL: TimeInterval = 30
 let CONFIG_PATH = REWINDER_HOME + "/config.json"
-let SPOOL_DIR = REWINDER_HOME + "/spool"
+let SPOOL_DIR = REWINDER_HOME + "/spool.noindex"
 let DB_PATH = REWINDER_HOME + "/index.db"
 let SQLITE_TRANSIENT_PTR = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 let CTYPES: [String: String] = ["webp": "image/webp", "jpg": "image/jpeg",
@@ -61,7 +61,7 @@ let configLock = NSLock()
 
 func loadRawConfig() -> [String: Any] {
     var cfg: [String: Any] = [
-        "data_dir": REWINDER_HOME + "/data", "quality": 25, "max_dim": 2560,
+        "data_dir": REWINDER_HOME + "/data.noindex", "quality": 25, "max_dim": 2560,
         "ffmpeg": "/usr/local/bin/ffmpeg", "legacy_dirs": [String](),
         "exclude_apps": [String](), "capture_interval": 60, "launch_at_login": true,
     ]
@@ -78,6 +78,32 @@ func saveRawConfig(_ cfg: [String: Any]) {
     let tmp = CONFIG_PATH + ".tmp"
     try? data.write(to: URL(fileURLWithPath: tmp))
     try? FileManager.default.replaceItemAt(URL(fileURLWithPath: CONFIG_PATH), withItemAt: URL(fileURLWithPath: tmp))
+}
+
+// Spotlight skips directories named *.noindex, keeping frames out of Finder
+// Recents and image searches. Renames a pre-2.4 data dir in place; the old
+// path goes on legacy_dirs so any frame raced in mid-rename gets drained.
+func ensureNoindex() {
+    let fm = FileManager.default
+    let oldSpool = REWINDER_HOME + "/spool"
+    if fm.fileExists(atPath: oldSpool), !fm.fileExists(atPath: SPOOL_DIR) {
+        try? fm.moveItem(atPath: oldSpool, toPath: SPOOL_DIR)
+    }
+    var cfg = loadRawConfig()
+    guard let dd = cfg["data_dir"] as? String, !dd.isEmpty,
+          !dd.hasSuffix(".noindex") else { return }
+    let nd = dd + ".noindex"
+    if fm.fileExists(atPath: dd), !fm.fileExists(atPath: nd) {
+        guard (try? fm.moveItem(atPath: dd, toPath: nd)) != nil else { return }
+    } else if !fm.fileExists(atPath: nd) {
+        return  // neither path exists (volume offline?) — retry next launch
+    }
+    cfg["data_dir"] = nd
+    var legacy = cfg["legacy_dirs"] as? [String] ?? []
+    if !legacy.contains(dd) { legacy.append(dd) }
+    cfg["legacy_dirs"] = legacy
+    saveRawConfig(cfg)
+    slog("data dir renamed to \(nd) (Spotlight exclusion)")
 }
 
 func searchRoots() -> [String] {
@@ -352,6 +378,7 @@ final class RewinderServer {
     static let shared = RewinderServer()
 
     func start() {
+        ensureNoindex()
         Thread { self.listenLoop() }.start()
         Thread { self.scanLoop() }.start()
     }
@@ -547,7 +574,7 @@ final class RewinderServer {
             return jsonResponse(out)
 
         case "/api/volumes":
-            var vols: [[String: Any]] = [["path": REWINDER_HOME + "/data", "label": "INTERNAL (default)",
+            var vols: [[String: Any]] = [["path": REWINDER_HOME + "/data.noindex", "label": "INTERNAL (default)",
                                           "free_bytes": freeBytes(REWINDER_HOME) ?? NSNull() as Any]]
             let fm = FileManager.default
             for v in (try? fm.contentsOfDirectory(atPath: "/Volumes"))?.sorted() ?? [] {
@@ -555,7 +582,7 @@ final class RewinderServer {
                 var isDir = ObjCBool(false)
                 guard fm.fileExists(atPath: p, isDirectory: &isDir), isDir.boolValue,
                       fm.isWritableFile(atPath: p) else { continue }
-                vols.append(["path": p + "/rewinder-data", "label": v,
+                vols.append(["path": p + "/rewinder-data.noindex", "label": v,
                              "free_bytes": freeBytes(p) ?? NSNull() as Any])
             }
             return jsonResponse(vols)

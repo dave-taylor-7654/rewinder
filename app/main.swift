@@ -50,7 +50,7 @@ func sh(_ args: [String]) -> Int32 {
 // MARK: - config
 
 struct Config {
-    var dataDir = REWINDER_HOME + "/data"
+    var dataDir = REWINDER_HOME + "/data.noindex"
     var quality = 25
     var maxDim: CGFloat = 2560
     var ffmpeg = "/usr/local/bin/ffmpeg"
@@ -305,7 +305,7 @@ func captureOnce(frontApp: NSRunningApplication?) async -> CaptureResult {
         return .ok("\(timeStr) · \(appName)")
     } catch {
         do {
-            let name = try store(stored, text: text, meta: meta, base: REWINDER_HOME + "/spool",
+            let name = try store(stored, text: text, meta: meta, base: SPOOL_DIR,
                                  day: day, stem: stem, cfg: cfg)
             saveFingerprint(fp, display: display.displayID)
             log("captured (SPOOLED, \(cfg.dataDir) unwritable) \(day)/\(name) app=\(appName)")

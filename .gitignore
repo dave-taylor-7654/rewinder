@@ -1,7 +1,9 @@
 build/
 config.json
 data/
+data.noindex/
 spool/
+spool.noindex/
 index.db
 .last-frame
 *.log
