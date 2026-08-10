@@ -114,6 +114,13 @@ func fingerprint(_ image: CGImage) -> [UInt8] {
     return buf
 }
 
+func secondsSinceLastInput() -> Double {
+    let types: [CGEventType] = [.mouseMoved, .leftMouseDown, .rightMouseDown,
+                                .otherMouseDown, .keyDown, .scrollWheel]
+    return types.map { CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: $0) }
+        .min() ?? 0
+}
+
 func isIdleDuplicate(_ fp: [UInt8], display: CGDirectDisplayID, cfg: Config) -> Bool {
     guard cfg.dedup,
           let data = try? Data(contentsOf: URL(fileURLWithPath: FP_STATE)),
@@ -121,7 +128,11 @@ func isIdleDuplicate(_ fp: [UInt8], display: CGDirectDisplayID, cfg: Config) -> 
     let ts = data.withUnsafeBytes { $0.loadUnaligned(as: Double.self) }
     let prevDisplay = data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 8, as: UInt32.self) }
     if prevDisplay != UInt32(display) { return false }
-    if Date().timeIntervalSince1970 - ts > cfg.dedupForceMinutes * 60 { return false }
+    // Periodic keepalive store — but only when someone is actually at the Mac.
+    // With no recent input, an unchanged screen (clock ticking, etc.) stays deduped
+    // indefinitely; the first tick after input resumes stores immediately.
+    if Date().timeIntervalSince1970 - ts > cfg.dedupForceMinutes * 60,
+       secondsSinceLastInput() < cfg.dedupForceMinutes * 60 { return false }
     let prev = [UInt8](data.suffix(fp.count))
     var changed = 0
     for i in 0..<fp.count where abs(Int(fp[i]) - Int(prev[i])) > 12 { changed += 1 }
