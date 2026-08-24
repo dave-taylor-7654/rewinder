@@ -224,6 +224,7 @@ func store(_ image: CGImage, text: String, meta: [String: String],
         name = stem + ".jpg"
     }
     if cfg.encrypt { encryptFileInPlace(dayDir.appendingPathComponent(name!).path) }
+    storeThumb(image, day: day, stem: stem)   // scrub proxy, while the frame is still in memory
     if var mdata = try? JSONSerialization.data(withJSONObject: meta) {
         if cfg.encrypt { mdata = encryptFrameData(mdata) }
         try? mdata.write(to: dayDir.appendingPathComponent(stem + ".json"))

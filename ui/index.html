@@ -25,7 +25,10 @@
   #daynav button:hover { border-color: #888; }
   #stage { flex: 1; display: flex; align-items: center; justify-content: center;
            position: relative; min-height: 0; background: #000; }
-  #shot { max-width: 100%; max-height: 100%; object-fit: contain; }
+  #shot, #proxy { position: absolute; inset: 0; width: 100%; height: 100%;
+                  object-fit: contain; }
+  #proxy { display: none; }
+  #proxy.on { display: block; }
   #empty { color: #555; font-size: 14px; text-align: center; line-height: 2; }
   #results { position: absolute; top: 0; right: 0; bottom: 0; width: 380px;
              background: rgba(20,20,20,.96); border-left: 1px solid #333;
@@ -158,6 +161,7 @@
   </div>
   <div id="stage">
     <img id="shot" style="display:none">
+    <img id="proxy">
     <div id="empty">NO CAPTURES IN THIS RANGE<br>widen the range, or wait for the timeline to fill</div>
     <div id="results"></div>
   </div>
@@ -221,21 +225,118 @@ function fetchShots() {
   return j(`/api/shots?since=${Math.floor(since)}`);
 }
 
-function show() {
+// ---- scrub proxies -------------------------------------------------------
+// A full frame is a ~2560px WebP: decode it and the viewer can't keep up with
+// a fast drag, so the image visibly stalls. While the scrubber is moving we
+// paint the server's 320px JPEG proxy instead — cheap enough to hit every
+// frame — and swap the real one in once the scrubber settles.
+
+const PROXY_MAX = 600;     // blobs held in memory (~5 MB)
+const PROXY_SPAN = 8;      // frames prefetched ahead of the drag
+const PROXY_LANES = 4;     // concurrent prefetches (the server closes each conn)
+const FULL_DELAY = 130;    // ms of stillness before the full frame is fetched
+
+const proxies = new Map();   // url -> blob: URL, insertion order = eviction order
+const proxyBusy = new Set();
+const proxyQueue = [];
+let proxyLanes = 0, wantFull = null, lastIdx = -1;
+
+const proxyURL = s => `/thumb/${s.day}/${s.f}`;
+const fullURL = s => `/img/${s.day}/${s.f}`;
+
+function keepProxy(url, obj) {
+  proxies.set(url, obj);
+  while (proxies.size > PROXY_MAX) {
+    const oldest = proxies.keys().next().value;
+    URL.revokeObjectURL(proxies.get(oldest));
+    proxies.delete(oldest);
+  }
+}
+
+// Fetches one proxy. `urgent` skips the prefetch queue — the frame under the
+// scrubber must never wait behind reads for frames the user hasn't reached.
+function loadProxy(url, urgent) {
+  if (proxies.has(url) || proxyBusy.has(url)) return;
+  proxyBusy.add(url);
+  const run = () => fetch(url)
+    .then(r => r.ok ? r.blob() : null)
+    .then(b => {
+      if (!b) return;
+      const obj = URL.createObjectURL(b);
+      keepProxy(url, obj);
+      if (idx >= 0 && shots[idx] && proxyURL(shots[idx]) === url) paintProxy(obj);
+    })
+    .catch(() => {})
+    .finally(() => proxyBusy.delete(url));
+  if (urgent) { run(); return; }
+  proxyQueue.push(run);
+  pumpProxies();
+}
+
+function pumpProxies() {
+  while (proxyLanes < PROXY_LANES && proxyQueue.length) {
+    proxyLanes++;
+    proxyQueue.shift()().finally(() => { proxyLanes--; pumpProxies(); });
+  }
+}
+
+// Warm the frames the drag is heading for, plus a few behind it for reversals.
+function prefetchProxies(center, dir) {
+  proxyQueue.length = 0;  // a new position invalidates the old wishlist
+  for (let k = 1; k <= PROXY_SPAN; k++) {
+    for (const i of [center + k * dir, ...(k <= 3 ? [center - k * dir] : [])])
+      if (i >= 0 && i < shots.length) loadProxy(proxyURL(shots[i]), false);
+  }
+}
+
+function paintProxy(obj) {
+  $("proxy").src = obj;
+  $("proxy").classList.add("on");
+}
+
+// Real frame for the current index. The proxy stays on top until it paints,
+// so the stale previous frame is never exposed.
+function loadFull() {
+  const s = shots[idx];
+  if (!s) return;
+  wantFull = fullURL(s);
+  $("shot").src = wantFull;
+  $("shot").style.display = "block";
+  for (const n of [idx - 1, idx + 1])   // neighbours, for arrow-key stepping
+    if (n >= 0 && n < shots.length) (new Image()).src = fullURL(shots[n]);
+}
+
+$("shot").addEventListener("load", () => {
+  if ($("shot").src.endsWith(wantFull)) $("proxy").classList.remove("on");
+});
+
+let fullTimer = null;
+
+// `moving` = the user is dragging or holding a key: proxy now, full frame when
+// they stop.
+function show(moving) {
+  clearTimeout(fullTimer);
   if (idx < 0 || !shots.length) {
-    $("shot").style.display = "none"; $("empty").style.display = "block";
+    $("shot").style.display = "none"; $("proxy").classList.remove("on");
+    $("empty").style.display = "block";
     $("when").textContent = "—"; $("count").textContent = "";
     return;
   }
   const s = shots[idx];
-  $("shot").src = `/img/${s.day}/${s.f}`;
-  $("shot").style.display = "block"; $("empty").style.display = "none";
+  $("empty").style.display = "none";
   $("when").textContent = `${s.day}  ${fmtT(s.t)}` + (s.app ? `  ·  ${s.app}` : "");
   $("count").textContent = `${idx + 1} / ${shots.length}`;
   $("scrub").value = idx;
-  // preload neighbors for smooth scrubbing
-  for (const n of [idx - 1, idx + 1])
-    if (n >= 0 && n < shots.length) (new Image()).src = `/img/${shots[n].day}/${shots[n].f}`;
+
+  const purl = proxyURL(s);
+  const have = proxies.get(purl);
+  if (have) paintProxy(have);
+  else loadProxy(purl, true);
+  prefetchProxies(idx, idx < lastIdx ? -1 : 1);
+  lastIdx = idx;
+
+  if (moving) fullTimer = setTimeout(loadFull, FULL_DELAY);
+  else loadFull();
 }
 
 async function loadRange(keepFrame) {
@@ -263,7 +364,7 @@ async function jumpToFrame(day, t) {
 function step(n) {
   if (!shots.length) return;
   idx = Math.min(shots.length - 1, Math.max(0, idx + n));
-  show();
+  show(true);
 }
 
 // ◀ ▶ jump to the start of the previous / next day within the loaded range
@@ -287,7 +388,11 @@ function dayJump(dir) {
   }
 }
 
-$("scrub").addEventListener("input", e => { idx = +e.target.value; show(); });
+$("scrub").addEventListener("input", e => { idx = +e.target.value; show(true); });
+$("scrub").addEventListener("change", () => show(false));   // released: full frame now
+document.addEventListener("keyup", e => {
+  if (e.key === "ArrowLeft" || e.key === "ArrowRight") show(false);
+});
 $("rangesel").addEventListener("change", () => {
   const custom = $("rangesel").value === "custom";
   $("customrange").classList.toggle("open", custom);

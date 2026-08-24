@@ -22,7 +22,8 @@ Apple Silicon, macOS 14+. Signed and notarized — no Gatekeeper hoops.
   interrupts protected playback; DRM video just appears black in frames
 - **Full-text search** of everything ever on screen (SQLite FTS5, on-device)
 - **Timeline scrubbing** across ranges: today / 48 h / 30 d / 400 d / all
-  time / custom date span
+  time / custom date span — drags stay live at any speed: a 320 px proxy of
+  each frame paints while you move, the full frame lands the moment you stop
 - **Per-app filter** — every frame is tagged with the frontmost app
 - **Ignored apps** — Privacy first. Listed apps' windows are *excluded from the frame itself*
 - **Encrypted at rest** — every frame and its OCR text is sealed with
@@ -75,6 +76,9 @@ identity. A stable signing identity is what keeps macOS permission grants
   sidecars into SQLite FTS5 and serves the UI + JSON API (in-process)
 - `app/Crypto.swift` — AES-256-GCM sealing of stored files, Keychain key
   management, and the unlock-to-view gate (LocalAuthentication)
+- `app/Thumbs.swift` — the scrub proxies: a 320 px JPEG per frame, sealed
+  with the frame key, cached under `~/rewinder/thumbs.noindex` (a derived
+  cache, safe to delete — it rebuilds in the background)
 - `ui/index.html` — the timeline/search UI (vanilla JS, no dependencies)
 - Frames live as `YYYY-MM-DD/HHMMSS.webp` + `.txt` (OCR) + `.json` (app tag)
   sidecars, each encrypted at rest; the search index can always be rebuilt

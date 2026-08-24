@@ -14,7 +14,7 @@ TSFLAG=(); [[ "$CERT" != "-" ]] && TSFLAG=(--timestamp)
 APP="${1:-/Applications/Rewinder.app}"
 
 mkdir -p build
-swiftc -O app/main.swift app/Server.swift app/Crypto.swift -o build/Rewinder
+swiftc -O app/main.swift app/Server.swift app/Crypto.swift app/Thumbs.swift -o build/Rewinder
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/ui"
@@ -34,8 +34,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleExecutable</key><string>Rewinder</string>
     <key>CFBundleIconFile</key><string>Rewinder</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>2.5</string>
-    <key>CFBundleVersion</key><string>2.5</string>
+    <key>CFBundleShortVersionString</key><string>2.6</string>
+    <key>CFBundleVersion</key><string>2.6</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>

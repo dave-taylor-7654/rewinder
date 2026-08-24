@@ -295,6 +295,9 @@ func scanOnce(_ db: DB) -> Int {
                 db.run("INSERT OR IGNORE INTO shots VALUES (?,?,?,?,?)",
                        [rel, day, stem, epochOf(day: day, t: stem), app])
                 db.run("INSERT INTO ocr (text, path) VALUES (?,?)", [text, rel])
+                if !fm.fileExists(atPath: thumbPath(day, stem)) {
+                    _ = thumbFor(day: day, name: name)
+                }
                 known.insert(rel)
                 added += 1
             }
@@ -314,6 +317,7 @@ func deletePaths(_ db: DB, _ paths: [String]) -> Int {
         guard parts.count == 2 else { continue }
         let day = String(parts[0]), name = String(parts[1])
         let stem = String(name.prefix(6))
+        removeThumb(day: day, stem: stem)
         for root in roots {
             for f in [name, stem + ".txt", stem + ".json"] {
                 let p = root + "/" + day + "/" + f
@@ -410,6 +414,9 @@ final class RewinderServer {
         // the OCR index holds plaintext text; keep it owner-only on disk
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: DB_PATH)
         Thread { migrateEncrypt() }.start()
+        let backfill = Thread { thumbBackfill() }
+        backfill.qualityOfService = .utility
+        backfill.start()
         Thread { self.listenLoop() }.start()
         Thread { self.scanLoop() }.start()
     }
@@ -627,6 +634,17 @@ final class RewinderServer {
             return jsonResponse(vols)
 
         default:
+            if req.path.hasPrefix("/thumb/") {
+                if viewingBlocked() { return errorResponse("locked", status: 423) }
+                let rel = String(req.path.dropFirst(7))
+                let parts = rel.split(separator: "/")
+                guard parts.count == 2, isDayName(String(parts[0])),
+                      shotStem(String(parts[1])) != nil else { return errorResponse("forbidden", status: 403) }
+                guard let jpeg = thumbFor(day: String(parts[0]), name: String(parts[1])) else {
+                    return errorResponse("not found", status: 404)
+                }
+                return httpResponse(200, "image/jpeg", jpeg)
+            }
             if req.path.hasPrefix("/img/") {
                 if viewingBlocked() { return errorResponse("locked", status: 423) }
                 let rel = String(req.path.dropFirst(5))
