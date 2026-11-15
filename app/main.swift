@@ -439,7 +439,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             it.target = self
             return it
         }
-        let status = item("REWINDER — \(health)", nil)
+        let status = item("REWINDER v\(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?") — \(health)", nil)
         status.isEnabled = false
         menu.addItem(status)
         let last = item("Last: \(lastCapture)", nil)
