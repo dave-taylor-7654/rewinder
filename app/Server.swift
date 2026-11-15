@@ -116,18 +116,18 @@ func migrateEncrypt() {
         guard let days = try? fm.contentsOfDirectory(atPath: root) else { continue }
         for day in days.sorted() where isDayName(day) {
             let ddir = root + "/" + day
-            for name in (try? fm.contentsOfDirectory(atPath: ddir)) ?? [] {
+            for name in (try? fm.contentsOfDirectory(atPath: ddir)) ?? [] { autoreleasepool {
                 let ext = (name as NSString).pathExtension.lowercased()
-                guard ["webp", "jpg", "jpeg", "txt", "json"].contains(ext) else { continue }
+                guard ["webp", "jpg", "jpeg", "txt", "json"].contains(ext) else { return }
                 let p = ddir + "/" + name
                 if let fh = FileHandle(forReadingAtPath: p) {
                     let head = try? fh.read(upToCount: ENC_MAGIC.count)
                     try? fh.close()
-                    if head == ENC_MAGIC { continue }
+                    if head == ENC_MAGIC { return }
                 }
                 encryptFileInPlace(p)
                 n += 1
-            }
+            } }
         }
     }
     if n > 0 { slog("sealed \(n) pre-encryption files") }
@@ -278,13 +278,13 @@ func scanOnce(_ db: DB) -> Int {
         for day in days.sorted() where isDayName(day) {
             let ddir = root + "/" + day
             guard let names = try? fm.contentsOfDirectory(atPath: ddir) else { continue }
-            for name in names.sorted() {
-                guard let stem = shotStem(name) else { continue }
+            for name in names.sorted() { autoreleasepool {
+                guard let stem = shotStem(name) else { return }
                 let rel = day + "/" + name
-                if known.contains(rel) { continue }
+                if known.contains(rel) { return }
                 guard let traw = fm.contents(atPath: ddir + "/" + stem + ".txt"),
                       let text = String(data: decryptFrameData(traw), encoding: .utf8) else {
-                    continue  // sidecar not written yet (or sealed and key unavailable); next scan
+                    return  // sidecar not written yet (or sealed and key unavailable); next scan
                 }
                 var app: Any = NSNull()
                 if let jd = fm.contents(atPath: ddir + "/" + stem + ".json"),
@@ -300,7 +300,7 @@ func scanOnce(_ db: DB) -> Int {
                 }
                 known.insert(rel)
                 added += 1
-            }
+            } }
         }
     }
     return added
@@ -424,9 +424,13 @@ final class RewinderServer {
     private func scanLoop() {
         guard let db = DB() else { slog("scanner: cannot open db"); return }
         while true {
-            migrateLegacy()
-            let n = scanOnce(db)
-            if n > 0 { slog("indexed \(n) new shots") }
+            // raw Thread = no run loop = no implicit pool drain; without this every
+            // Foundation object a scan touches (one per file, every 30s) leaked forever
+            autoreleasepool {
+                migrateLegacy()
+                let n = scanOnce(db)
+                if n > 0 { slog("indexed \(n) new shots") }
+            }
             Thread.sleep(forTimeInterval: SCAN_INTERVAL)
         }
     }

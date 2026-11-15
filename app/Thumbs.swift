@@ -102,15 +102,15 @@ func thumbBackfill() {
         guard let days = try? fm.contentsOfDirectory(atPath: root) else { continue }
         for day in days.sorted(by: >) where isDayName(day) {
             guard let names = try? fm.contentsOfDirectory(atPath: root + "/" + day) else { continue }
-            for name in names.sorted() {
-                guard let stem = shotStem(name) else { continue }
-                if fm.fileExists(atPath: thumbPath(day, stem)) { continue }
+            for name in names.sorted() { autoreleasepool {
+                guard let stem = shotStem(name) else { return }
+                if fm.fileExists(atPath: thumbPath(day, stem)) { return }
                 guard let raw = fm.contents(atPath: root + "/" + day + "/" + name),
-                      let jpeg = renderThumb(decryptFrameData(raw)) else { continue }
+                      let jpeg = renderThumb(decryptFrameData(raw)) else { return }
                 writeThumb(jpeg, day: day, stem: stem)
                 made += 1
                 Thread.sleep(forTimeInterval: 0.02)
-            }
+            } }
         }
     }
     if made > 0 { slog("built \(made) scrub thumbnails") }
