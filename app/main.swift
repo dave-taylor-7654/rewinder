@@ -12,9 +12,11 @@
 import AppKit
 import CoreGraphics
 import Foundation
+import CoreImage
 import ImageIO
 import ScreenCaptureKit
 import Vision
+import UniformTypeIdentifiers
 import WebKit
 
 let HOME = NSHomeDirectory()
@@ -352,7 +354,7 @@ final class TimelineWindow: NSObject, WKNavigationDelegate {
         w.minSize = NSSize(width: 720, height: 480)
         w.center()
         w.setFrameAutosaveName("RewinderTimeline")
-        let wv = WKWebView(frame: rect)
+        let wv = FrameWebView(frame: rect)
         wv.navigationDelegate = self
         wv.autoresizingMask = [.width, .height]
         w.contentView = wv
@@ -371,6 +373,153 @@ final class TimelineWindow: NSObject, WKNavigationDelegate {
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { retries = 0 }
 }
 
+// MARK: - frame context menu
+//
+// WebKit's stock image menu is mostly dead inside an embedded WKWebView
+// (no browser to open windows / handle downloads / Look Up / Share), so we
+// replace it with native actions on the frame currently shown in the timeline.
+
+final class FrameWebView: WKWebView {
+    private struct Frame { let day: String; let f: String; let t: String; let app: String }
+
+    override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
+        super.willOpenMenu(menu, with: event)
+        let ids = menu.items.compactMap { $0.identifier?.rawValue }
+        // only take over the image menu; leave text/link menus alone
+        guard ids.contains(where: { $0.contains("CopyImage") || $0.contains("DownloadImage") }) else { return }
+        menu.removeAllItems()
+        func add(_ title: String, _ sel: Selector) {
+            let it = NSMenuItem(title: title, action: sel, keyEquivalent: "")
+            it.target = self
+            menu.addItem(it)
+        }
+        add("Open Image in Preview", #selector(openInPreview))
+        add("Save Image As…", #selector(saveImage))
+        menu.addItem(.separator())
+        add("Copy Image", #selector(copyImage))
+        add("Copy Subject", #selector(copySubject))
+        menu.addItem(.separator())
+        add("Share…", #selector(share))
+    }
+
+    // the frame under the playhead, from the page's own state
+    private func currentFrame(_ done: @escaping (Frame, NSImage) -> Void) {
+        let js = "(() => { const s = shots[idx]; return s ? [s.day, s.f, s.t || '', s.app || ''] : null })()"
+        evaluateJavaScript(js) { result, _ in
+            guard let a = result as? [String], a.count == 4,
+                  let url = URL(string: "\(UI_URL)/img/\(a[0])/\(a[1])") else { NSSound.beep(); return }
+            URLSession.shared.dataTask(with: url) { data, resp, _ in
+                DispatchQueue.main.async {
+                    guard (resp as? HTTPURLResponse)?.statusCode == 200, let data = data,
+                          let img = NSImage(data: data) else { NSSound.beep(); return }
+                    done(Frame(day: a[0], f: a[1], t: a[2], app: a[3]), img)
+                }
+            }.resume()
+        }
+    }
+
+    private func baseName(_ fr: Frame) -> String {
+        let stem = fr.f.split(separator: ".").first.map(String.init) ?? fr.f
+        var hms = stem
+        if stem.count == 6 {
+            let c = Array(stem)
+            hms = "\(String(c[0...1])).\(String(c[2...3])).\(String(c[4...5]))"
+        }
+        let app = fr.app.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
+        return "Rewinder \(fr.day) \(hms)" + (app.isEmpty ? "" : " \(app)")
+    }
+
+    private func pngData(_ img: NSImage) -> Data? {
+        guard let cg = img.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+        return NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:])
+    }
+
+    // Decrypted copies handed to Preview/Share live here; they're plaintext, so
+    // anything older than an hour is swept on each export and at launch.
+    static let exportDir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("Rewinder-export")
+
+    static func sweepExports(olderThan age: TimeInterval = 3600) {
+        let fm = FileManager.default
+        guard let items = try? fm.contentsOfDirectory(at: exportDir, includingPropertiesForKeys: [.contentModificationDateKey]) else { return }
+        for u in items {
+            let m = (try? u.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+            if Date().timeIntervalSince(m) > age { try? fm.removeItem(at: u) }
+        }
+    }
+
+    private func tempPNG(_ fr: Frame, _ img: NSImage) -> URL? {
+        FrameWebView.sweepExports()
+        try? FileManager.default.createDirectory(at: FrameWebView.exportDir, withIntermediateDirectories: true)
+        let u = FrameWebView.exportDir.appendingPathComponent(baseName(fr) + ".png")
+        guard let png = pngData(img), (try? png.write(to: u)) != nil else { NSSound.beep(); return nil }
+        return u
+    }
+
+    @objc private func openInPreview() {
+        currentFrame { fr, img in
+            guard let u = self.tempPNG(fr, img) else { return }
+            let preview = URL(fileURLWithPath: "/System/Applications/Preview.app")
+            NSWorkspace.shared.open([u], withApplicationAt: preview, configuration: NSWorkspace.OpenConfiguration())
+        }
+    }
+
+    @objc private func saveImage() {
+        currentFrame { fr, img in
+            let panel = NSSavePanel()
+            panel.allowedContentTypes = [.png]
+            panel.nameFieldStringValue = self.baseName(fr) + ".png"
+            panel.directoryURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+            guard let win = self.window else { return }
+            panel.beginSheetModal(for: win) { resp in
+                guard resp == .OK, let u = panel.url, let png = self.pngData(img) else { return }
+                if (try? png.write(to: u)) == nil { NSSound.beep() }
+            }
+        }
+    }
+
+    @objc private func copyImage() {
+        currentFrame { _, img in
+            let pb = NSPasteboard.general
+            pb.clearContents()
+            pb.writeObjects([img])
+        }
+    }
+
+    // Vision foreground-instance mask — same subject lift Preview/Photos use
+    @objc private func copySubject() {
+        currentFrame { _, img in
+            guard let cg = img.cgImage(forProposedRect: nil, context: nil, hints: nil) else { NSSound.beep(); return }
+            DispatchQueue.global(qos: .userInitiated).async {
+                let req = VNGenerateForegroundInstanceMaskRequest()
+                let handler = VNImageRequestHandler(cgImage: cg)
+                var out: CGImage?
+                if (try? handler.perform([req])) != nil, let obs = req.results?.first,
+                   let buf = try? obs.generateMaskedImage(ofInstances: obs.allInstances, from: handler,
+                                                          croppedToInstancesExtent: true) {
+                    let ci = CIImage(cvPixelBuffer: buf)
+                    out = CIContext().createCGImage(ci, from: ci.extent)
+                }
+                DispatchQueue.main.async {
+                    guard let out = out else { NSSound.beep(); return }   // no subject found
+                    let pb = NSPasteboard.general
+                    pb.clearContents()
+                    pb.writeObjects([NSImage(cgImage: out, size: NSSize(width: out.width, height: out.height))])
+                }
+            }
+        }
+    }
+
+    @objc private func share() {
+        // capture the click point now; the menu is gone by the time the image arrives
+        let p = convert(window?.mouseLocationOutsideOfEventStream ?? .zero, from: nil)
+        currentFrame { fr, img in
+            guard let u = self.tempPNG(fr, img) else { return }
+            NSSharingServicePicker(items: [u])
+                .show(relativeTo: NSRect(x: p.x, y: p.y, width: 1, height: 1), of: self, preferredEdge: .minY)
+        }
+    }
+}
+
 // MARK: - app delegate
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -384,6 +533,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationDidFinishLaunching(_ note: Notification) {
         try? FileManager.default.createDirectory(atPath: REWINDER_HOME, withIntermediateDirectories: true)
         installAgentIfNeeded()
+        FrameWebView.sweepExports(olderThan: 0)
         setupStatusItem()
         RewinderServer.shared.start()
 
